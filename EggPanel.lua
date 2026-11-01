@@ -1,277 +1,248 @@
--- blessedstx | tecla padrão: RightShift
+-- steal an egg — chilli-style hub (open source, no loader)
+-- loadstring(game:HttpGet("https://raw.githubusercontent.com/yourname/yourrepo/main/egg_hub.lua"))()
+
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
-local VirtualUser = game:GetService("VirtualUser")
-local GuiService = game:GetService("GuiService")
-local player = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
 
-local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
-if parentGui:FindFirstChild("blessedstx") then parentGui.blessedstx:Destroy() end
-
--- ===== TEMA =====
-local C = {
-    bg = Color3.fromRGB(16, 16, 22),
-    panel = Color3.fromRGB(24, 24, 34),
-    item = Color3.fromRGB(34, 34, 48),
-    accent = Color3.fromRGB(124, 92, 255),
-    on = Color3.fromRGB(70, 200, 120),
-    text = Color3.fromRGB(235, 235, 245),
-    sub = Color3.fromRGB(150, 150, 170),
+-- config block
+local CONFIG = {
+    TickMs = 4,
+    AutoFarm = false,
+    FarmMode = "Fast Tween",
+    TeleportZones = true,
+    StealPriority = "Highest Value",
+    TargetAreas = true,
+    MinRarity = "Eternal",
+    MinStealValue = 0,
+    MoveToEgg = false,
+    Delivery = true,
+    AntiGuard = false,
+    Speed = 50,
+    JumpPower = 100,
+    Fly = false,
+    Noclip = false,
 }
 
-local cfg = {
-    antiAfk = true,
-    autoCollect = false,
-    autoFarm = false,
-    interval = 0.5,
-    toggleKey = Enum.KeyCode.RightShift,
-}
-
--- ===== HELPERS =====
-local function new(class, props, parent)
-    local o = Instance.new(class)
-    for k, v in pairs(props) do o[k] = v end
-    o.Parent = parent
-    return o
-end
-local function corner(o, r) new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, o) end
-local function tween(o, t, props)
-    TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quad), props):Play()
+-- helpers
+local function getChar()
+    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 end
 
--- ===== GUI BASE =====
-local gui = new("ScreenGui", { Name = "blessedstx", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling }, parentGui)
+local function getHRP()
+    local c = getChar()
+    return c:FindFirstChild("HumanoidRootPart")
+end
 
-local main = new("Frame", {
-    Size = UDim2.fromOffset(420, 300),
-    Position = UDim2.new(0.5, -210, 0.5, -150),
-    BackgroundColor3 = C.bg,
-    BorderSizePixel = 0,
-    ClipsDescendants = true,
-}, gui)
-corner(main, 10)
-new("UIStroke", { Color = C.accent, Thickness = 1, Transparency = 0.5 }, main)
+local function tweenTo(pos, speed)
+    local hrp = getHRP()
+    if not hrp then return end
+    local dist = (hrp.Position - pos).Magnitude
+    local t = TweenService:Create(hrp, TweenInfo.new(dist / speed, Enum.EasingStyle.Linear), {CFrame = CFrame.new(pos)})
+    t:Play()
+end
 
-local top = new("Frame", { Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = C.panel, BorderSizePixel = 0 }, main)
-new("TextLabel", {
-    Size = UDim2.new(1, -90, 1, 0), Position = UDim2.fromOffset(14, 0),
-    BackgroundTransparency = 1, Text = "blessedstx", Font = Enum.Font.GothamBold,
-    TextSize = 17, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
-}, top)
-
-local minBtn = new("TextButton", {
-    Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -66, 0, 6),
-    BackgroundColor3 = C.item, Text = "–", Font = Enum.Font.GothamBold,
-    TextSize = 16, TextColor3 = C.text, BorderSizePixel = 0,
-}, top)
-corner(minBtn, 6)
-local closeBtn = new("TextButton", {
-    Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -34, 0, 6),
-    BackgroundColor3 = Color3.fromRGB(200, 60, 70), Text = "×", Font = Enum.Font.GothamBold,
-    TextSize = 16, TextColor3 = C.text, BorderSizePixel = 0,
-}, top)
-corner(closeBtn, 6)
-
--- abas
-local tabBar = new("Frame", { Size = UDim2.new(0, 110, 1, -40), Position = UDim2.fromOffset(0, 40), BackgroundColor3 = C.panel, BorderSizePixel = 0 }, main)
-new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, tabBar)
-new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, tabBar)
-
-local content = new("Frame", { Size = UDim2.new(1, -110, 1, -40), Position = UDim2.fromOffset(110, 40), BackgroundTransparency = 1 }, main)
-
-local pages, tabButtons = {}, {}
-local function createTab(name, order)
-    local page = new("ScrollingFrame", {
-        Size = UDim2.new(1, -20, 1, -20), Position = UDim2.fromOffset(10, 10),
-        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
-        CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false,
-    }, content)
-    new("UIListLayout", { Padding = UDim.new(0, 8) }, page)
-
-    local btn = new("TextButton", {
-        Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = C.item, Text = name,
-        Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = C.sub,
-        BorderSizePixel = 0, LayoutOrder = order,
-    }, tabBar)
-    corner(btn, 6)
-    btn.MouseButton1Click:Connect(function()
-        for n, p in pairs(pages) do
-            p.Visible = (n == name)
-            tabButtons[n].TextColor3 = (n == name) and C.text or C.sub
-            tween(tabButtons[n], 0.15, { BackgroundColor3 = (n == name) and C.accent or C.item })
+-- anti guard (basic bypass for common guards)
+local function antiGuard()
+    if not CONFIG.AntiGuard then return end
+    local char = getChar()
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.Health = hum.MaxHealth
+        hum.WalkSpeed = CONFIG.Speed
+        hum.JumpPower = CONFIG.JumpPower
+    end
+    for _, v in ipairs(char:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.CanCollide = not CONFIG.Noclip
         end
-    end)
-    pages[name], tabButtons[name] = page, btn
-    return page
+    end
 end
 
--- ===== COMPONENTES =====
-local function addToggle(page, label, key, onChange)
-    local row = new("TextButton", { Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = C.panel, Text = "", BorderSizePixel = 0, AutoButtonColor = false }, page)
-    corner(row, 8)
-    new("TextLabel", {
-        Size = UDim2.new(1, -70, 1, 0), Position = UDim2.fromOffset(12, 0), BackgroundTransparency = 1,
-        Text = label, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
-    }, row)
-    local track = new("Frame", { Size = UDim2.fromOffset(40, 20), Position = UDim2.new(1, -52, 0.5, -10), BorderSizePixel = 0 }, row)
-    corner(track, 10)
-    local knob = new("Frame", { Size = UDim2.fromOffset(16, 16), BackgroundColor3 = C.text, BorderSizePixel = 0 }, track)
-    corner(knob, 8)
-    local function refresh(animate)
-        local on = cfg[key]
-        local t = animate and 0.15 or 0
-        tween(track, t, { BackgroundColor3 = on and C.on or C.item })
-        tween(knob, t, { Position = on and UDim2.fromOffset(22, 2) or UDim2.fromOffset(2, 2) })
-    end
-    row.MouseButton1Click:Connect(function()
-        cfg[key] = not cfg[key]
-        refresh(true)
-        if onChange then onChange(cfg[key]) end
-    end)
-    refresh(false)
-end
-
-local function addSlider(page, label, key, min, max, step)
-    local row = new("Frame", { Size = UDim2.new(1, 0, 0, 52), BackgroundColor3 = C.panel, BorderSizePixel = 0 }, page)
-    corner(row, 8)
-    local lbl = new("TextLabel", {
-        Size = UDim2.new(1, -24, 0, 22), Position = UDim2.fromOffset(12, 4), BackgroundTransparency = 1,
-        Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
-    }, row)
-    local bar = new("Frame", { Size = UDim2.new(1, -24, 0, 6), Position = UDim2.new(0, 12, 0, 34), BackgroundColor3 = C.item, BorderSizePixel = 0 }, row)
-    corner(bar, 3)
-    local fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = C.accent, BorderSizePixel = 0 }, bar)
-    corner(fill, 3)
-
-    local function set(v)
-        v = math.clamp(math.floor(v / step + 0.5) * step, min, max)
-        cfg[key] = v
-        lbl.Text = string.format("%s: %.2f", label, v)
-        fill.Size = UDim2.new((v - min) / (max - min), 0, 1, 0)
-    end
-    set(cfg[key])
-
-    local sliding = false
-    local function fromInput(i)
-        set(min + (max - min) * math.clamp((i.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1))
-    end
-    bar.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-            sliding = true; fromInput(i)
+-- find eggs
+local function getEggs()
+    local eggs = {}
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj.Name:lower():find("egg") and obj:IsA("BasePart") then
+            table.insert(eggs, obj)
         end
-    end)
-    UIS.InputChanged:Connect(function(i)
-        if sliding and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then fromInput(i) end
-    end)
-    UIS.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then sliding = false end
-    end)
+    end
+    return eggs
 end
 
--- notificações
-local notifHolder = new("Frame", { Size = UDim2.fromOffset(260, 300), Position = UDim2.new(1, -276, 1, -316), BackgroundTransparency = 1 }, gui)
-new("UIListLayout", { VerticalAlignment = Enum.VerticalAlignment.Bottom, Padding = UDim.new(0, 6) }, notifHolder)
-local function notify(text, dur)
-    local n = new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = C.panel, Text = "  " .. text,
-        Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
-        BorderSizePixel = 0, BackgroundTransparency = 1, TextTransparency = 1,
-    }, notifHolder)
-    corner(n, 8)
-    tween(n, 0.2, { BackgroundTransparency = 0, TextTransparency = 0 })
-    task.delay(dur or 3, function()
-        tween(n, 0.25, { BackgroundTransparency = 1, TextTransparency = 1 })
-        task.wait(0.3); n:Destroy()
-    end)
-end
+-- main loop
+RunService.Heartbeat:Connect(function()
+    antiGuard()
 
--- ===== ABAS =====
-local pMain = createTab("Principal", 1)
-local pCfg = createTab("Config", 2)
+    if CONFIG.MoveToEgg then
+        local eggs = getEggs()
+        if #eggs > 0 then
+            local target = eggs[1]
+            tweenTo(target.Position, CONFIG.Speed)
+        end
+    end
 
-addToggle(pMain, "Anti-AFK", "antiAfk", function(v) notify("Anti-AFK " .. (v and "ligado" or "desligado")) end)
-addToggle(pMain, "Auto coletar ovos", "autoCollect", function(v) notify("Auto coletar " .. (v and "ligado" or "desligado")) end)
-addToggle(pMain, "Auto farm", "autoFarm", function(v) notify("Auto farm " .. (v and "ligado" or "desligado")) end)
-
-addSlider(pCfg, "Intervalo do loop (s)", "interval", 0.1, 3, 0.05)
-
-local keyRow = new("TextButton", {
-    Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = C.panel, BorderSizePixel = 0,
-    Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = C.text, AutoButtonColor = false,
-}, pCfg)
-corner(keyRow, 8)
-local listening = false
-local function refreshKey() keyRow.Text = "Tecla do painel: " .. cfg.toggleKey.Name end
-refreshKey()
-keyRow.MouseButton1Click:Connect(function() listening = true; keyRow.Text = "Pressione uma tecla..." end)
-
--- ===== LÓGICA =====
-player.Idled:Connect(function()
-    if cfg.antiAfk then
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new())
+    if CONFIG.AutoFarm then
+        local eggs = getEggs()
+        for _, egg in ipairs(eggs) do
+            if egg:FindFirstChild("ClickDetector") then
+                fireclickdetector(egg.ClickDetector)
+            end
+        end
     end
 end)
 
-local function collectEggs()
-    -- FILL: ex: game.ReplicatedStorage.Remotes.CollectEgg:FireServer(...)
-end
-local function farmStep()
-    -- FILL: lógica de auto-farm do jogo
-end
+-- UI
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
-task.spawn(function()
-    while gui.Parent do
-        task.wait(cfg.interval)
-        if cfg.autoCollect then pcall(collectEggs) end
-        if cfg.autoFarm then pcall(farmStep) end
+local Window = Rayfield:CreateWindow({
+    Name = "Chilli Hub",
+    LoadingTitle = "Chilli Hub",
+    LoadingSubtitle = "by Gorilla",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "ChilliHub",
+        FileName = "Config"
+    },
+    KeySystem = false
+})
+
+-- Farm tab
+local FarmTab = Window:CreateTab("Farm", 4483362458)
+FarmTab:CreateToggle({
+    Name = "Auto Farm",
+    CurrentValue = false,
+    Flag = "AutoFarm",
+    Callback = function(v) CONFIG.AutoFarm = v end
+})
+
+FarmTab:CreateDropdown({
+    Name = "Farm Mode",
+    Options = {"Fast Tween", "Teleport", "Walk"},
+    CurrentOption = "Fast Tween",
+    Flag = "FarmMode",
+    Callback = function(opt) CONFIG.FarmMode = opt end
+})
+
+FarmTab:CreateToggle({
+    Name = "Teleport Zones",
+    CurrentValue = true,
+    Flag = "TeleportZones",
+    Callback = function(v) CONFIG.TeleportZones = v end
+})
+
+FarmTab:CreateDropdown({
+    Name = "Steal Priority",
+    Options = {"Highest Value", "Lowest Value", "Nearest"},
+    CurrentOption = "Highest Value",
+    Flag = "StealPriority",
+    Callback = function(opt) CONFIG.StealPriority = opt end
+})
+
+FarmTab:CreateToggle({
+    Name = "Target Areas",
+    CurrentValue = true,
+    Flag = "TargetAreas",
+    Callback = function(v) CONFIG.TargetAreas = v end
+})
+
+FarmTab:CreateDropdown({
+    Name = "Min Rarity",
+    Options = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Eternal"},
+    CurrentOption = "Eternal",
+    Flag = "MinRarity",
+    Callback = function(opt) CONFIG.MinRarity = opt end
+})
+
+FarmTab:CreateSlider({
+    Name = "Min Steal Value",
+    Range = {0, 100000},
+    Increment = 100,
+    Suffix = " coins",
+    CurrentValue = 0,
+    Flag = "MinStealValue",
+    Callback = function(v) CONFIG.MinStealValue = v end
+})
+
+-- Event tab
+local EventTab = Window:CreateTab("Event", 4483362458)
+EventTab:CreateButton({
+    Name = "Move To Egg",
+    Callback = function()
+        CONFIG.MoveToEgg = not CONFIG.MoveToEgg
     end
-end)
+})
 
-GuiService.ErrorMessageChanged:Connect(function(msg)
-    if msg and msg ~= "" then
-        warn("[blessedstx] desconectado: " .. msg)
-        notify("Desconectado: " .. msg, 8)
-    end
-end)
+EventTab:CreateToggle({
+    Name = "Delivery",
+    CurrentValue = true,
+    Flag = "Delivery",
+    Callback = function(v) CONFIG.Delivery = v end
+})
 
--- ===== ARRASTAR / MINIMIZAR / FECHAR / TECLA =====
-local dragging, dragStart, startPos
-top.InputBegan:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-        dragging, dragStart, startPos = true, i.Position, main.Position
-    end
-end)
-UIS.InputChanged:Connect(function(i)
-    if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-        local d = i.Position - dragStart
-        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-    end
-end)
-UIS.InputEnded:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
-end)
+-- Player tab
+local PlayerTab = Window:CreateTab("Player", 4483362458)
+PlayerTab:CreateSlider({
+    Name = "Speed",
+    Range = {16, 200},
+    Increment = 1,
+    Suffix = " studs",
+    CurrentValue = 50,
+    Flag = "Speed",
+    Callback = function(v) CONFIG.Speed = v end
+})
 
-local minimized = false
-minBtn.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    tween(main, 0.2, { Size = minimized and UDim2.fromOffset(420, 40) or UDim2.fromOffset(420, 300) })
-end)
-closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
+PlayerTab:CreateSlider({
+    Name = "Jump Power",
+    Range = {50, 300},
+    Increment = 1,
+    Suffix = " studs",
+    CurrentValue = 100,
+    Flag = "JumpPower",
+    Callback = function(v) CONFIG.JumpPower = v end
+})
 
-UIS.InputBegan:Connect(function(i, gp)
-    if listening and i.UserInputType == Enum.UserInputType.Keyboard then
-        cfg.toggleKey = i.KeyCode; listening = false; refreshKey()
-        notify("Tecla alterada para " .. i.KeyCode.Name)
-        return
-    end
-    if not gp and i.KeyCode == cfg.toggleKey then main.Visible = not main.Visible end
-end)
+PlayerTab:CreateToggle({
+    Name = "Fly",
+    CurrentValue = false,
+    Flag = "Fly",
+    Callback = function(v) CONFIG.Fly = v end
+})
 
--- abre na primeira aba
-tabButtons["Principal"]:Activate()
-pages["Principal"].Visible = true
-tabButtons["Principal"].BackgroundColor3 = C.accent
-tabButtons["Principal"].TextColor3 = C.text
-notify("blessedstx carregado")
+PlayerTab:CreateToggle({
+    Name = "Noclip",
+    CurrentValue = false,
+    Flag = "Noclip",
+    Callback = function(v) CONFIG.Noclip = v end
+})
+
+-- Misc tab
+local MiscTab = Window:CreateTab("Misc", 4483362458)
+MiscTab:CreateToggle({
+    Name = "Anti Guard",
+    CurrentValue = false,
+    Flag = "AntiGuard",
+    Callback = function(v) CONFIG.AntiGuard = v end
+})
+
+-- Config tab
+local ConfigTab = Window:CreateTab("Config", 4483362458)
+ConfigTab:CreateButton({
+    Name = "Save Config",
+    Callback = function() Rayfield:SaveConfiguration() end
+})
+
+ConfigTab:CreateButton({
+    Name = "Load Config",
+    Callback = function() Rayfield:LoadConfiguration() end
+})
+
+-- bottom toggle (Anti Guard quick access)
+Rayfield:Notify({
+    Title = "Chilli Hub",
+    Content = "Loaded. Toggle Anti Guard in Misc.",
+    Duration = 5
+})
