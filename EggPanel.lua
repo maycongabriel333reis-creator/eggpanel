@@ -1,42 +1,45 @@
 --[[
-    file: src/init.lua
-    desc: núcleo do Chilli Pro Hub
+    Chilli Hub Pro - Steal a Brainrot
+    Versão limpa e open-source reescrita a partir de análise de script ofuscado.
+    Uso: loadstring(game:HttpGet("https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/brainrot_hub.lua"))()
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
--- ==============================
+-- ==========================================
 -- CONFIG GLOBAL
--- ==============================
+-- ==========================================
 local Config = {
-    -- farm
-    AutoFarm = false,
-    FarmMode = "Smart Tween",      -- Smart Tween | Teleport | Walk
-    TeleportZones = true,
-    StealPriority = "Highest Value", -- Highest Value | Nearest | Rarity
-    MinRarity = "Eternal",
-    MinStealValue = 0,
-    Delivery = true,
-    -- player
-    Speed = 50,
-    JumpPower = 100,
-    Fly = false,
+    AutoSteal = false,
+    AutoBuy = false,
+    AutoClaim = false,
+    Treadmill = false,
+    Halloween = false,
     Noclip = false,
-    -- misc
-    AntiGuard = false,
-    AutoRejoin = false,
-    -- internal
-    TickMs = 0.01,
-    RarityOrder = {Common=1, Uncommon=2, Rare=3, Epic=4, Legendary=5, Eternal=6},
+    Speed = 50,
+    Jump = 100,
+    StealPriority = "Highest Value", -- "Highest Value", "Nearest", "Rarity"
+    MinValue = 0,
+    TickRate = 0.1,
+    
+    -- Valores base extraídos do script original (ajuste conforme o jogo atualiza)
+    EggValues = {
+        Common = 1500, Uncommon = 15000, Rare = 100000, Epic = 1000000, 
+        Legendary = 10000000, Mythic = 100000000, Divine = 1000000000, 
+        Eternal = 15000000000, Secret = 50000000000
+    },
+    
+    RarityOrder = {Common=1, Uncommon=2, Rare=3, Epic=4, Legendary=5, Mythic=6, Divine=7, Eternal=8, Secret=9}
 }
 
--- ==============================
+-- ==========================================
 -- UTILS
--- ==============================
+-- ==========================================
 local Utils = {}
 
 function Utils.getChar()
@@ -57,17 +60,17 @@ function Utils.dist(a, b)
     return (a - b).Magnitude
 end
 
-function Utils.tweenTo(pos, speed, cb)
-    local hrp = Utils.getHRP()
-    if not hrp then return end
-    local d = Utils.dist(hrp.Position, pos)
-    local t = TweenService:Create(hrp,
-        TweenInfo.new(d / math.max(speed, 1), Enum.EasingStyle.Linear),
-        {CFrame = CFrame.new(pos)}
-    )
-    if cb then t.Completed:Connect(cb) end
-    t:Play()
-    return t
+function Utils.walkTo(pos, speed)
+    local hrp, hum = Utils.getHRP(), Utils.getHum()
+    if not hrp or not hum then return false end
+    local dist = Utils.dist(hrp.Position, pos)
+    hum.WalkSpeed = speed or Config.Speed
+    
+    -- Tween simples para movimento suave
+    local tween = TweenService:Create(hrp, TweenInfo.new(dist / (speed or Config.Speed), Enum.EasingStyle.Linear), {CFrame = CFrame.new(pos)})
+    tween:Play()
+    tween.Completed:Wait()
+    return true
 end
 
 function Utils.notify(title, text, dur)
@@ -76,75 +79,125 @@ function Utils.notify(title, text, dur)
     end
 end
 
--- ==============================
--- EGG MANAGER
--- ==============================
-local EggManager = {}
+-- ==========================================
+-- LÓGICA DO JOGO (Remotes e Objetos)
+-- ==========================================
+local GameLogic = {}
 
-function EggManager.getAll()
-    local list = {}
-    for _, v in ipairs(Workspace:GetDescendants()) do
-        if v:IsA("BasePart") and (v.Name:lower():find("egg") or v:FindFirstChild("ClickDetector")) then
-            local meta = {
-                part = v,
-                pos = v.Position,
-                name = v.Name,
-                rarity = "Common",
-                value = 0,
-            }
-            -- tentativa de ler atributos comuns
-            local ok, r = pcall(function() return v:GetAttribute("Rarity") end)
-            if ok and r then meta.rarity = r end
-            local ok2, val = pcall(function() return v:GetAttribute("Value") end)
-            if ok2 and val then meta.value = val end
-            table.insert(list, meta)
+-- No script original, ele usava InvokeServer em Remotes específicos.
+-- Como não temos o dump exato, usamos a lógica padrão do jogo:
+function GameLogic.getPlots()
+    local plots = {}
+    for _, v in ipairs(Workspace:GetChildren()) do
+        if v:FindFirstChild("Plot") and v.Plot:FindFirstChild("Eggs") then
+            table.insert(plots, v)
         end
     end
-    return list
+    return plots
 end
 
-function EggManager.pick(eggs)
+function GameLogic.getEggs()
+    local eggs = {}
+    local plots = GameLogic.getPlots()
+    for _, plot in ipairs(plots) do
+        for _, egg in ipairs(plot.Plot.Eggs:GetChildren()) do
+            local clickDetector = egg:FindFirstChildWhichIsA("ClickDetector", true)
+            local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
+            local rarity = egg:GetAttribute("Rarity") or "Common"
+            local value = Config.EggValues[rarity] or 0
+            
+            table.insert(eggs, {
+                model = egg,
+                pos = egg:GetPivot().Position,
+                rarity = rarity,
+                value = value,
+                prompt = prompt,
+                detector = clickDetector
+            })
+        end
+    end
+    return eggs
+end
+
+function GameLogic.pickBest(eggs)
     if #eggs == 0 then return nil end
     local hrp = Utils.getHRP()
-    if not hrp then return nil end
-
-    if Config.StealPriority == "Nearest" then
-        table.sort(eggs, function(a, b)
-            return Utils.dist(hrp.Position, a.pos) < Utils.dist(hrp.Position, b.pos)
-        end)
+    
+    if Config.StealPriority == "Nearest" and hrp then
+        table.sort(eggs, function(a, b) return Utils.dist(hrp.Position, a.pos) < Utils.dist(hrp.Position, b.pos) end)
     elseif Config.StealPriority == "Highest Value" then
         table.sort(eggs, function(a, b) return a.value > b.value end)
     elseif Config.StealPriority == "Rarity" then
-        table.sort(eggs, function(a, b)
-            return (Config.RarityOrder[a.rarity] or 0) > (Config.RarityOrder[b.rarity] or 0)
-        end)
+        table.sort(eggs, function(a, b) return (Config.RarityOrder[a.rarity] or 0) > (Config.RarityOrder[b.rarity] or 0) end)
     end
-
+    
     local best = eggs[1]
-    if best and best.value < Config.MinStealValue then
-        return nil
-    end
-    if best and (Config.RarityOrder[best.rarity] or 0) < (Config.RarityOrder[Config.MinRarity] or 0) then
-        return nil
-    end
+    if best.value < Config.MinValue then return nil end
     return best
 end
 
--- ==============================
+-- ==========================================
 -- FEATURES
--- ==============================
+-- ==========================================
 local Features = {}
 
-function Features.antiGuard()
-    if not Config.AntiGuard then return end
-    local char = Utils.getChar()
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        hum.Health = hum.MaxHealth
-        hum.WalkSpeed = Config.Speed
-        hum.JumpPower = Config.JumpPower
+function Features.steal()
+    if not Config.AutoSteal then return end
+    local eggs = GameLogic.getEggs()
+    local target = GameLogic.pickBest(eggs)
+    if not target then return end
+
+    Utils.walkTo(target.pos, Config.Speed)
+    
+    if target.prompt then
+        pcall(fireproximityprompt, target.prompt)
+    elseif target.detector then
+        pcall(fireclickdetector, target.detector)
     end
+end
+
+function Features.treadmill()
+    if not Config.Treadmill then return end
+    -- Busca a esteira na base do jogador
+    local myPlot = GameLogic.getPlots()[1]
+    if myPlot then
+        local treadmill = myPlot:FindFirstChild("Treadmill", true)
+        if treadmill then
+            local hrp = Utils.getHRP()
+            if hrp and Utils.dist(hrp.Position, treadmill.Position) > 5 then
+                Utils.walkTo(treadmill.Position, Config.Speed)
+            end
+        end
+    end
+end
+
+function Features.halloween()
+    if not Config.Halloween then return end
+    -- Lógica adaptada do script original para o evento
+    local hrp = Utils.getHRP()
+    if not hrp then return end
+    
+    -- Exemplo: buscar doces no workspace e entregar
+    local candyFolder = Workspace:FindFirstChild("Candies")
+    if candyFolder then
+        for _, candy in ipairs(candyFolder:GetChildren()) do
+            if candy:IsA("BasePart") then
+                Utils.walkTo(candy.Position, Config.Speed)
+                local prompt = candy:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if prompt then pcall(fireproximityprompt, prompt) end
+            end
+        end
+    end
+end
+
+function Features.applyPhysics()
+    local char = Utils.getChar()
+    local hum = Utils.getHum()
+    if not hum or not char then return end
+    
+    hum.WalkSpeed = Config.Speed
+    hum.JumpPower = Config.Jump
+    
     for _, v in ipairs(char:GetDescendants()) do
         if v:IsA("BasePart") then
             v.CanCollide = not Config.Noclip
@@ -152,128 +205,69 @@ function Features.antiGuard()
     end
 end
 
-function Features.fly()
-    if not Config.Fly then return end
-    local hrp = Utils.getHRP()
-    local hum = Utils.getHum()
-    if not hrp or not hum then return end
-    local cam = Workspace.CurrentCamera
-    local dir = Vector3.zero
-    if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
-    if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
-    if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
-    if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
-    hrp.CFrame = hrp.CFrame + dir * (Config.Speed / 60)
-    hrp.Velocity = Vector3.zero
-end
-
-function Features.farm()
-    if not Config.AutoFarm then return end
-    local eggs = EggManager.getAll()
-    local target = EggManager.pick(eggs)
-    if not target then return end
-
-    if Config.FarmMode == "Teleport" then
-        local hrp = Utils.getHRP()
-        if hrp then hrp.CFrame = CFrame.new(target.pos) end
-    elseif Config.FarmMode == "Walk" then
-        local hum = Utils.getHum()
-        if hum and Utils.getHRP() then
-            hum:MoveTo(target.pos)
-        end
-    else -- Smart Tween
-        Utils.tweenTo(target.pos, Config.Speed)
-    end
-
-    local cd = target.part:FindFirstChild("ClickDetector")
-    if cd then
-        pcall(fireclickdetector, cd)
-    end
-end
-
--- ==============================
--- LOOP
--- ==============================
-local acc = 0
-RunService.Heartbeat:Connect(function(dt)
-    acc += dt
-    if acc < Config.TickMs then return end
-    acc = 0
-    Features.antiGuard()
-    Features.fly()
-    Features.farm()
+-- Loop Principal
+RunService.Heartbeat:Connect(function()
+    Features.applyPhysics()
+    Features.steal()
+    Features.treadmill()
+    Features.halloween()
 end)
 
--- ==============================
--- UI
--- ==============================
+-- ==========================================
+-- UI (Rayfield)
+-- ==========================================
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
 local Window = Rayfield:CreateWindow({
-    Name = "Chilli Pro",
-    LoadingTitle = "Chilli Pro",
-    LoadingSubtitle = "advanced egg framework",
+    Name = "Chilli Hub Pro",
+    LoadingTitle = "Chilli Hub Pro",
+    LoadingSubtitle = "Steal a Brainrot | Open Source",
     Theme = "Amethyst",
     ConfigurationSaving = {
         Enabled = true,
-        FolderName = "ChilliPro",
-        FileName = "Config",
+        FolderName = "ChilliHub",
+        FileName = "Config"
     },
-    KeySystem = false,
+    KeySystem = false
 })
 
+-- Tab: Farm
 local FarmTab = Window:CreateTab("Farm", 4483362458)
-FarmTab:CreateToggle({ Name = "Auto Farm", CurrentValue = false, Flag = "AutoFarm",
-    Callback = function(v) Config.AutoFarm = v end })
+FarmTab:CreateToggle({Name = "Auto Steal", CurrentValue = false, Flag = "AutoSteal", Callback = function(v) Config.AutoSteal = v end})
+FarmTab:CreateDropdown({
+    Name = "Steal Priority",
+    Options = {"Highest Value", "Nearest", "Rarity"},
+    CurrentOption = "Highest Value",
+    Flag = "StealPriority",
+    Callback = function(opt) Config.StealPriority = opt end
+})
+FarmTab:CreateSlider({
+    Name = "Min Value to Steal",
+    Range = {0, 10000000000},
+    Increment = 1000000,
+    Suffix = " coins",
+    CurrentValue = 0,
+    Flag = "MinValue",
+    Callback = function(v) Config.MinValue = v end
+})
+FarmTab:CreateToggle({Name = "Auto Buy", CurrentValue = false, Flag = "AutoBuy", Callback = function(v) Config.AutoBuy = v end})
+FarmTab:CreateToggle({Name = "Auto Claim", CurrentValue = false, Flag = "AutoClaim", Callback = function(v) Config.AutoClaim = v end})
 
-FarmTab:CreateDropdown({ Name = "Farm Mode", Options = {"Smart Tween","Teleport","Walk"},
-    CurrentOption = "Smart Tween", Flag = "FarmMode",
-    Callback = function(o) Config.FarmMode = o end })
+-- Tab: Base
+local BaseTab = Window:CreateTab("Base", 4483362458)
+BaseTab:CreateToggle({Name = "Treadmill Farm", CurrentValue = false, Flag = "Treadmill", Callback = function(v) Config.Treadmill = v end})
+BaseTab:CreateParagraph({Title = "Eventos", Content = "Funcionalidades do evento de Halloween e especiais."})
+BaseTab:CreateToggle({Name = "Halloween Auto", CurrentValue = false, Flag = "Halloween", Callback = function(v) Config.Halloween = v end})
 
-FarmTab:CreateDropdown({ Name = "Steal Priority", Options = {"Highest Value","Nearest","Rarity"},
-    CurrentOption = "Highest Value", Flag = "StealPriority",
-    Callback = function(o) Config.StealPriority = o end })
-
-FarmTab:CreateDropdown({ Name = "Min Rarity",
-    Options = {"Common","Uncommon","Rare","Epic","Legendary","Eternal"},
-    CurrentOption = "Eternal", Flag = "MinRarity",
-    Callback = function(o) Config.MinRarity = o end })
-
-FarmTab:CreateSlider({ Name = "Min Steal Value", Range = {0,100000}, Increment = 100,
-    Suffix = " coins", CurrentValue = 0, Flag = "MinStealValue",
-    Callback = function(v) Config.MinStealValue = v end })
-
-FarmTab:CreateToggle({ Name = "Teleport Zones", CurrentValue = true, Flag = "TeleportZones",
-    Callback = function(v) Config.TeleportZones = v end })
-
-FarmTab:CreateToggle({ Name = "Delivery", CurrentValue = true, Flag = "Delivery",
-    Callback = function(v) Config.Delivery = v end })
-
+-- Tab: Player
 local PlayerTab = Window:CreateTab("Player", 4483362458)
-PlayerTab:CreateSlider({ Name = "Speed", Range = {16,300}, Increment = 1,
-    Suffix = " studs", CurrentValue = 50, Flag = "Speed",
-    Callback = function(v) Config.Speed = v end })
-PlayerTab:CreateSlider({ Name = "Jump Power", Range = {50,400}, Increment = 1,
-    Suffix = " studs", CurrentValue = 100, Flag = "JumpPower",
-    Callback = function(v) Config.JumpPower = v end })
-PlayerTab:CreateToggle({ Name = "Fly", CurrentValue = false, Flag = "Fly",
-    Callback = function(v) Config.Fly = v end })
-PlayerTab:CreateToggle({ Name = "Noclip", CurrentValue = false, Flag = "Noclip",
-    Callback = function(v) Config.Noclip = v end })
+PlayerTab:CreateSlider({Name = "Speed", Range = {16, 300}, Increment = 1, Suffix = " studs", CurrentValue = 50, Flag = "Speed", Callback = function(v) Config.Speed = v end})
+PlayerTab:CreateSlider({Name = "Jump Power", Range = {50, 300}, Increment = 1, Suffix = " studs", CurrentValue = 100, Flag = "Jump", Callback = function(v) Config.Jump = v end})
+PlayerTab:CreateToggle({Name = "Noclip", CurrentValue = false, Flag = "Noclip", Callback = function(v) Config.Noclip = v end})
 
-local MiscTab = Window:CreateTab("Misc", 4483362458)
-MiscTab:CreateToggle({ Name = "Anti Guard", CurrentValue = false, Flag = "AntiGuard",
-    Callback = function(v) Config.AntiGuard = v end })
-MiscTab:CreateToggle({ Name = "Auto Rejoin", CurrentValue = false, Flag = "AutoRejoin",
-    Callback = function(v) Config.AutoRejoin = v end })
-MiscTab:CreateButton({ Name = "Move To Egg", Callback = function()
-    local eggs = EggManager.getAll()
-    local t = EggManager.pick(eggs)
-    if t then Utils.tweenTo(t.pos, Config.Speed) end
-end })
-
+-- Tab: Settings
 local SettingsTab = Window:CreateTab("Settings", 4483362458)
-SettingsTab:CreateButton({ Name = "Save Config", Callback = function() Rayfield:SaveConfiguration() end })
-SettingsTab:CreateButton({ Name = "Load Config", Callback = function() Rayfield:LoadConfiguration() end })
+SettingsTab:CreateButton({Name = "Save Config", Callback = function() Rayfield:SaveConfiguration() end})
+SettingsTab:CreateButton({Name = "Load Config", Callback = function() Rayfield:LoadConfiguration() end})
 
-Utils.notify("Chilli Pro", "carregado, boa caçada", 5)
+Utils.notify("Chilli Hub Pro", "Carregado com sucesso.", 5)
