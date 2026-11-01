@@ -1,5 +1,7 @@
--- steal an egg — chilli-style hub (open source, no loader)
--- loadstring(game:HttpGet("https://raw.githubusercontent.com/yourname/yourrepo/main/egg_hub.lua"))()
+--[[
+    file: src/init.lua
+    desc: núcleo do Chilli Pro Hub
+]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -7,242 +9,271 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
--- config block
-local CONFIG = {
-    TickMs = 4,
+-- ==============================
+-- CONFIG GLOBAL
+-- ==============================
+local Config = {
+    -- farm
     AutoFarm = false,
-    FarmMode = "Fast Tween",
+    FarmMode = "Smart Tween",      -- Smart Tween | Teleport | Walk
     TeleportZones = true,
-    StealPriority = "Highest Value",
-    TargetAreas = true,
+    StealPriority = "Highest Value", -- Highest Value | Nearest | Rarity
     MinRarity = "Eternal",
     MinStealValue = 0,
-    MoveToEgg = false,
     Delivery = true,
-    AntiGuard = false,
+    -- player
     Speed = 50,
     JumpPower = 100,
     Fly = false,
     Noclip = false,
+    -- misc
+    AntiGuard = false,
+    AutoRejoin = false,
+    -- internal
+    TickMs = 0.01,
+    RarityOrder = {Common=1, Uncommon=2, Rare=3, Epic=4, Legendary=5, Eternal=6},
 }
 
--- helpers
-local function getChar()
+-- ==============================
+-- UTILS
+-- ==============================
+local Utils = {}
+
+function Utils.getChar()
     return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 end
 
-local function getHRP()
-    local c = getChar()
-    return c:FindFirstChild("HumanoidRootPart")
+function Utils.getHRP()
+    local c = Utils.getChar()
+    return c and c:FindFirstChild("HumanoidRootPart")
 end
 
-local function tweenTo(pos, speed)
-    local hrp = getHRP()
+function Utils.getHum()
+    local c = Utils.getChar()
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+function Utils.dist(a, b)
+    return (a - b).Magnitude
+end
+
+function Utils.tweenTo(pos, speed, cb)
+    local hrp = Utils.getHRP()
     if not hrp then return end
-    local dist = (hrp.Position - pos).Magnitude
-    local t = TweenService:Create(hrp, TweenInfo.new(dist / speed, Enum.EasingStyle.Linear), {CFrame = CFrame.new(pos)})
+    local d = Utils.dist(hrp.Position, pos)
+    local t = TweenService:Create(hrp,
+        TweenInfo.new(d / math.max(speed, 1), Enum.EasingStyle.Linear),
+        {CFrame = CFrame.new(pos)}
+    )
+    if cb then t.Completed:Connect(cb) end
     t:Play()
+    return t
 end
 
--- anti guard (basic bypass for common guards)
-local function antiGuard()
-    if not CONFIG.AntiGuard then return end
-    local char = getChar()
+function Utils.notify(title, text, dur)
+    if Rayfield and Rayfield.Notify then
+        Rayfield:Notify({Title = title, Content = text, Duration = dur or 4})
+    end
+end
+
+-- ==============================
+-- EGG MANAGER
+-- ==============================
+local EggManager = {}
+
+function EggManager.getAll()
+    local list = {}
+    for _, v in ipairs(Workspace:GetDescendants()) do
+        if v:IsA("BasePart") and (v.Name:lower():find("egg") or v:FindFirstChild("ClickDetector")) then
+            local meta = {
+                part = v,
+                pos = v.Position,
+                name = v.Name,
+                rarity = "Common",
+                value = 0,
+            }
+            -- tentativa de ler atributos comuns
+            local ok, r = pcall(function() return v:GetAttribute("Rarity") end)
+            if ok and r then meta.rarity = r end
+            local ok2, val = pcall(function() return v:GetAttribute("Value") end)
+            if ok2 and val then meta.value = val end
+            table.insert(list, meta)
+        end
+    end
+    return list
+end
+
+function EggManager.pick(eggs)
+    if #eggs == 0 then return nil end
+    local hrp = Utils.getHRP()
+    if not hrp then return nil end
+
+    if Config.StealPriority == "Nearest" then
+        table.sort(eggs, function(a, b)
+            return Utils.dist(hrp.Position, a.pos) < Utils.dist(hrp.Position, b.pos)
+        end)
+    elseif Config.StealPriority == "Highest Value" then
+        table.sort(eggs, function(a, b) return a.value > b.value end)
+    elseif Config.StealPriority == "Rarity" then
+        table.sort(eggs, function(a, b)
+            return (Config.RarityOrder[a.rarity] or 0) > (Config.RarityOrder[b.rarity] or 0)
+        end)
+    end
+
+    local best = eggs[1]
+    if best and best.value < Config.MinStealValue then
+        return nil
+    end
+    if best and (Config.RarityOrder[best.rarity] or 0) < (Config.RarityOrder[Config.MinRarity] or 0) then
+        return nil
+    end
+    return best
+end
+
+-- ==============================
+-- FEATURES
+-- ==============================
+local Features = {}
+
+function Features.antiGuard()
+    if not Config.AntiGuard then return end
+    local char = Utils.getChar()
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
         hum.Health = hum.MaxHealth
-        hum.WalkSpeed = CONFIG.Speed
-        hum.JumpPower = CONFIG.JumpPower
+        hum.WalkSpeed = Config.Speed
+        hum.JumpPower = Config.JumpPower
     end
     for _, v in ipairs(char:GetDescendants()) do
         if v:IsA("BasePart") then
-            v.CanCollide = not CONFIG.Noclip
+            v.CanCollide = not Config.Noclip
         end
     end
 end
 
--- find eggs
-local function getEggs()
-    local eggs = {}
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj.Name:lower():find("egg") and obj:IsA("BasePart") then
-            table.insert(eggs, obj)
-        end
-    end
-    return eggs
+function Features.fly()
+    if not Config.Fly then return end
+    local hrp = Utils.getHRP()
+    local hum = Utils.getHum()
+    if not hrp or not hum then return end
+    local cam = Workspace.CurrentCamera
+    local dir = Vector3.zero
+    if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
+    if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
+    if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
+    if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
+    hrp.CFrame = hrp.CFrame + dir * (Config.Speed / 60)
+    hrp.Velocity = Vector3.zero
 end
 
--- main loop
-RunService.Heartbeat:Connect(function()
-    antiGuard()
+function Features.farm()
+    if not Config.AutoFarm then return end
+    local eggs = EggManager.getAll()
+    local target = EggManager.pick(eggs)
+    if not target then return end
 
-    if CONFIG.MoveToEgg then
-        local eggs = getEggs()
-        if #eggs > 0 then
-            local target = eggs[1]
-            tweenTo(target.Position, CONFIG.Speed)
+    if Config.FarmMode == "Teleport" then
+        local hrp = Utils.getHRP()
+        if hrp then hrp.CFrame = CFrame.new(target.pos) end
+    elseif Config.FarmMode == "Walk" then
+        local hum = Utils.getHum()
+        if hum and Utils.getHRP() then
+            hum:MoveTo(target.pos)
         end
+    else -- Smart Tween
+        Utils.tweenTo(target.pos, Config.Speed)
     end
 
-    if CONFIG.AutoFarm then
-        local eggs = getEggs()
-        for _, egg in ipairs(eggs) do
-            if egg:FindFirstChild("ClickDetector") then
-                fireclickdetector(egg.ClickDetector)
-            end
-        end
+    local cd = target.part:FindFirstChild("ClickDetector")
+    if cd then
+        pcall(fireclickdetector, cd)
     end
+end
+
+-- ==============================
+-- LOOP
+-- ==============================
+local acc = 0
+RunService.Heartbeat:Connect(function(dt)
+    acc += dt
+    if acc < Config.TickMs then return end
+    acc = 0
+    Features.antiGuard()
+    Features.fly()
+    Features.farm()
 end)
 
+-- ==============================
 -- UI
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+-- ==============================
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
 local Window = Rayfield:CreateWindow({
-    Name = "Chilli Hub",
-    LoadingTitle = "Chilli Hub",
-    LoadingSubtitle = "by Gorilla",
+    Name = "Chilli Pro",
+    LoadingTitle = "Chilli Pro",
+    LoadingSubtitle = "advanced egg framework",
+    Theme = "Amethyst",
     ConfigurationSaving = {
         Enabled = true,
-        FolderName = "ChilliHub",
-        FileName = "Config"
+        FolderName = "ChilliPro",
+        FileName = "Config",
     },
-    KeySystem = false
+    KeySystem = false,
 })
 
--- Farm tab
 local FarmTab = Window:CreateTab("Farm", 4483362458)
-FarmTab:CreateToggle({
-    Name = "Auto Farm",
-    CurrentValue = false,
-    Flag = "AutoFarm",
-    Callback = function(v) CONFIG.AutoFarm = v end
-})
+FarmTab:CreateToggle({ Name = "Auto Farm", CurrentValue = false, Flag = "AutoFarm",
+    Callback = function(v) Config.AutoFarm = v end })
 
-FarmTab:CreateDropdown({
-    Name = "Farm Mode",
-    Options = {"Fast Tween", "Teleport", "Walk"},
-    CurrentOption = "Fast Tween",
-    Flag = "FarmMode",
-    Callback = function(opt) CONFIG.FarmMode = opt end
-})
+FarmTab:CreateDropdown({ Name = "Farm Mode", Options = {"Smart Tween","Teleport","Walk"},
+    CurrentOption = "Smart Tween", Flag = "FarmMode",
+    Callback = function(o) Config.FarmMode = o end })
 
-FarmTab:CreateToggle({
-    Name = "Teleport Zones",
-    CurrentValue = true,
-    Flag = "TeleportZones",
-    Callback = function(v) CONFIG.TeleportZones = v end
-})
+FarmTab:CreateDropdown({ Name = "Steal Priority", Options = {"Highest Value","Nearest","Rarity"},
+    CurrentOption = "Highest Value", Flag = "StealPriority",
+    Callback = function(o) Config.StealPriority = o end })
 
-FarmTab:CreateDropdown({
-    Name = "Steal Priority",
-    Options = {"Highest Value", "Lowest Value", "Nearest"},
-    CurrentOption = "Highest Value",
-    Flag = "StealPriority",
-    Callback = function(opt) CONFIG.StealPriority = opt end
-})
+FarmTab:CreateDropdown({ Name = "Min Rarity",
+    Options = {"Common","Uncommon","Rare","Epic","Legendary","Eternal"},
+    CurrentOption = "Eternal", Flag = "MinRarity",
+    Callback = function(o) Config.MinRarity = o end })
 
-FarmTab:CreateToggle({
-    Name = "Target Areas",
-    CurrentValue = true,
-    Flag = "TargetAreas",
-    Callback = function(v) CONFIG.TargetAreas = v end
-})
+FarmTab:CreateSlider({ Name = "Min Steal Value", Range = {0,100000}, Increment = 100,
+    Suffix = " coins", CurrentValue = 0, Flag = "MinStealValue",
+    Callback = function(v) Config.MinStealValue = v end })
 
-FarmTab:CreateDropdown({
-    Name = "Min Rarity",
-    Options = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Eternal"},
-    CurrentOption = "Eternal",
-    Flag = "MinRarity",
-    Callback = function(opt) CONFIG.MinRarity = opt end
-})
+FarmTab:CreateToggle({ Name = "Teleport Zones", CurrentValue = true, Flag = "TeleportZones",
+    Callback = function(v) Config.TeleportZones = v end })
 
-FarmTab:CreateSlider({
-    Name = "Min Steal Value",
-    Range = {0, 100000},
-    Increment = 100,
-    Suffix = " coins",
-    CurrentValue = 0,
-    Flag = "MinStealValue",
-    Callback = function(v) CONFIG.MinStealValue = v end
-})
+FarmTab:CreateToggle({ Name = "Delivery", CurrentValue = true, Flag = "Delivery",
+    Callback = function(v) Config.Delivery = v end })
 
--- Event tab
-local EventTab = Window:CreateTab("Event", 4483362458)
-EventTab:CreateButton({
-    Name = "Move To Egg",
-    Callback = function()
-        CONFIG.MoveToEgg = not CONFIG.MoveToEgg
-    end
-})
-
-EventTab:CreateToggle({
-    Name = "Delivery",
-    CurrentValue = true,
-    Flag = "Delivery",
-    Callback = function(v) CONFIG.Delivery = v end
-})
-
--- Player tab
 local PlayerTab = Window:CreateTab("Player", 4483362458)
-PlayerTab:CreateSlider({
-    Name = "Speed",
-    Range = {16, 200},
-    Increment = 1,
-    Suffix = " studs",
-    CurrentValue = 50,
-    Flag = "Speed",
-    Callback = function(v) CONFIG.Speed = v end
-})
+PlayerTab:CreateSlider({ Name = "Speed", Range = {16,300}, Increment = 1,
+    Suffix = " studs", CurrentValue = 50, Flag = "Speed",
+    Callback = function(v) Config.Speed = v end })
+PlayerTab:CreateSlider({ Name = "Jump Power", Range = {50,400}, Increment = 1,
+    Suffix = " studs", CurrentValue = 100, Flag = "JumpPower",
+    Callback = function(v) Config.JumpPower = v end })
+PlayerTab:CreateToggle({ Name = "Fly", CurrentValue = false, Flag = "Fly",
+    Callback = function(v) Config.Fly = v end })
+PlayerTab:CreateToggle({ Name = "Noclip", CurrentValue = false, Flag = "Noclip",
+    Callback = function(v) Config.Noclip = v end })
 
-PlayerTab:CreateSlider({
-    Name = "Jump Power",
-    Range = {50, 300},
-    Increment = 1,
-    Suffix = " studs",
-    CurrentValue = 100,
-    Flag = "JumpPower",
-    Callback = function(v) CONFIG.JumpPower = v end
-})
-
-PlayerTab:CreateToggle({
-    Name = "Fly",
-    CurrentValue = false,
-    Flag = "Fly",
-    Callback = function(v) CONFIG.Fly = v end
-})
-
-PlayerTab:CreateToggle({
-    Name = "Noclip",
-    CurrentValue = false,
-    Flag = "Noclip",
-    Callback = function(v) CONFIG.Noclip = v end
-})
-
--- Misc tab
 local MiscTab = Window:CreateTab("Misc", 4483362458)
-MiscTab:CreateToggle({
-    Name = "Anti Guard",
-    CurrentValue = false,
-    Flag = "AntiGuard",
-    Callback = function(v) CONFIG.AntiGuard = v end
-})
+MiscTab:CreateToggle({ Name = "Anti Guard", CurrentValue = false, Flag = "AntiGuard",
+    Callback = function(v) Config.AntiGuard = v end })
+MiscTab:CreateToggle({ Name = "Auto Rejoin", CurrentValue = false, Flag = "AutoRejoin",
+    Callback = function(v) Config.AutoRejoin = v end })
+MiscTab:CreateButton({ Name = "Move To Egg", Callback = function()
+    local eggs = EggManager.getAll()
+    local t = EggManager.pick(eggs)
+    if t then Utils.tweenTo(t.pos, Config.Speed) end
+end })
 
--- Config tab
-local ConfigTab = Window:CreateTab("Config", 4483362458)
-ConfigTab:CreateButton({
-    Name = "Save Config",
-    Callback = function() Rayfield:SaveConfiguration() end
-})
+local SettingsTab = Window:CreateTab("Settings", 4483362458)
+SettingsTab:CreateButton({ Name = "Save Config", Callback = function() Rayfield:SaveConfiguration() end })
+SettingsTab:CreateButton({ Name = "Load Config", Callback = function() Rayfield:LoadConfiguration() end })
 
-ConfigTab:CreateButton({
-    Name = "Load Config",
-    Callback = function() Rayfield:LoadConfiguration() end
-})
-
--- bottom toggle (Anti Guard quick access)
-Rayfield:Notify({
-    Title = "Chilli Hub",
-    Content = "Loaded. Toggle Anti Guard in Misc.",
-    Duration = 5
-})
+Utils.notify("Chilli Pro", "carregado, boa caçada", 5)
